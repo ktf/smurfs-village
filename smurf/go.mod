@@ -1,4 +1,4 @@
-module pi2/board
+module smurfs-village/smurf
 
 go 1.27.1
 

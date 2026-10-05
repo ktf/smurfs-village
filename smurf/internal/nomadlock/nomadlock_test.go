@@ -66,17 +66,17 @@ func TestAcquireRenewRelease(t *testing.T) {
 	f := &fakeNomad{}
 	c := client(t, f)
 	ctx := context.Background()
-	id, err := c.Acquire(ctx, "nomad/jobs/agent-board/leader", "alloc-a", 15*time.Second, 15*time.Second)
+	id, err := c.Acquire(ctx, "nomad/jobs/smurf-board/leader", "alloc-a", 15*time.Second, 15*time.Second)
 	if err != nil || id != "lock-1" {
 		t.Fatalf("acquire: %q %v", id, err)
 	}
-	if _, err := c.Acquire(ctx, "nomad/jobs/agent-board/leader", "alloc-b", 15*time.Second, 15*time.Second); !errors.Is(err, ErrHeld) {
+	if _, err := c.Acquire(ctx, "nomad/jobs/smurf-board/leader", "alloc-b", 15*time.Second, 15*time.Second); !errors.Is(err, ErrHeld) {
 		t.Fatalf("second acquire: %v, want ErrHeld", err)
 	}
-	if err := c.Renew(ctx, "nomad/jobs/agent-board/leader", id); err != nil {
+	if err := c.Renew(ctx, "nomad/jobs/smurf-board/leader", id); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Release(ctx, "nomad/jobs/agent-board/leader", id); err != nil {
+	if err := c.Release(ctx, "nomad/jobs/smurf-board/leader", id); err != nil {
 		t.Fatal(err)
 	}
 	if f.holder != "" {

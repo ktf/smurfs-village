@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"pi2/board/internal/store"
+	"smurfs-village/smurf/internal/store"
 )
 
 //go:embed board.html

@@ -1,10 +1,10 @@
-## Agent Board service: tasks, comments, events and usage for the agent fleet.
+## Smurfs Village board: tasks, comments, events and usage for the agent fleet.
 #
-#   nomad job run -output board.nomad.hcl   # parse, submit nothing
-#   nomad-rw job run board.nomad.hcl        # register (human)
+#   nomad job run -output smurf-board.nomad.hcl   # parse, submit nothing
+#   nomad-rw job run smurf-board.nomad.hcl        # register (human)
 #
 # One allocation, anywhere in the pool. The SQLite database lives on the group's
-# ephemeral disk and Litestream streams it to s3://smurfs-village/agent-board,
+# ephemeral disk and Litestream streams it to s3://smurfs-village/board,
 # so no node is special:
 #   * a restart on the same node reuses the local copy (sticky ephemeral disk);
 #   * a move to another node migrates it, or restores it from S3 if that fails;
@@ -12,16 +12,16 @@
 #     empty board can never overwrite the good copy.
 #
 # Two writers on one S3 copy would corrupt it, so two allocations must never
-# run at once. The board task runs under a Nomad variable lock (board lock, see
+# run at once. The board task runs under a Nomad variable lock (smurf lock, see
 # entrypoint.sh): a replacement waits for it, and an allocation that cannot
 # renew it stops at once. That needs a one-time ACL policy for the task's
-# workload identity, deploy/board-lock.policy.hcl.
+# workload identity, deploy/smurf-board-lock.policy.hcl.
 #
 # S3 credentials follow queue-metrics.nomad: a security-proxy sidecar holds the
 # bucket's keys (pushed from Vault by the bootstrap sidecar) and the board task
 # only ever sees a rotating gate token.
 
-job "agent-board" {
+job "smurf-board" {
   datacenters = ["meyrin"]
   type        = "service"
 
@@ -66,7 +66,7 @@ job "agent-board" {
     }
 
     service {
-      name     = "agent-board"
+      name     = "smurf-board"
       port     = "http"
       provider = "consul"
 
@@ -284,9 +284,9 @@ job "agent-board" {
         cat /etc/grid-security/hostcert.pem /etc/grid-security/hostkey.pem \
           | "$BIN/security-proxy-push" grid-cert --socket "$SOCK" || return 1
         # TODO: the Vault path and fields of the smurfs-village keypair.
-        python3 /local/vault-field.py kv/data/agent-board s3_access_key \
+        python3 /local/vault-field.py kv/data/smurfs-village s3_access_key \
           | "$BIN/security-proxy-push" s3-access-smurfs-village --socket "$SOCK" || return 1
-        python3 /local/vault-field.py kv/data/agent-board s3_secret_key \
+        python3 /local/vault-field.py kv/data/smurfs-village s3_secret_key \
           | "$BIN/security-proxy-push" s3-secret-smurfs-village --socket "$SOCK" || return 1
         }
 
@@ -338,14 +338,14 @@ job "agent-board" {
 
       config {
         # TODO: pin by digest once pushed (docker build -f deploy/Dockerfile).
-        image        = "registry.cern.ch/alisw/agent-board:0.1.0"
+        image        = "registry.cern.ch/alisw/smurf:0.1.0"
         network_mode = "host"
       }
 
       # Time for Litestream to ship the last second of writes on a stop.
       kill_timeout = "30s"
 
-      # NOMAD_TOKEN for the Task API socket, used by board lock.
+      # NOMAD_TOKEN for the Task API socket, used by smurf lock.
       identity {
         env = true
       }

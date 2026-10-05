@@ -1,19 +1,24 @@
-// Command board runs the agent board service and talks to it.
+// Command smurf is the Smurfs Village tool: the task board, the service behind
+// it, and the helpers its Nomad jobs use.
 //
-//	board serve [-db board.db] [-listen 127.0.0.1:8080]
-//	board add [-repo R] [-p N] [-parent ID] [-labels JSON] "title" [body]
-//	board list [-state S] [-parent ID] [-assignee A]
-//	board show ID
-//	board comment ID "text"
-//	board move ID STATE [-assignee A] [-branch B]
-//	board events ID
-//	board search QUERY
-//	board s3-creds [-socket S] [-route s3]   AWS credential_process helper
-//	board proxy-port [-socket S] [-route s3]
-//	board lock [-path P] [-ttl 15s] -- CMD ARGS...  run CMD only while holding a Nomad variable lock
+//	smurf board serve [-db board.db] [-listen 127.0.0.1:8080]
+//	smurf board add [-repo R] [-p N] [-parent ID] [-labels JSON] "title" [body]
+//	smurf board list [-state S] [-parent ID] [-assignee A]
+//	smurf board show ID
+//	smurf board comment ID "text"
+//	smurf board move ID STATE [-assignee A] [-branch B]
+//	smurf board events ID
+//	smurf board search QUERY
 //
-// Clients read BOARD_URL (default http://127.0.0.1:8080), BOARD_TOKEN and
-// BOARD_ACTOR (default $USER): the name recorded on comments and changes.
+// The everyday board commands also work without "board": smurf add, ls, show,
+// comment, mv, events, search.
+//
+//	smurf lock [-path P] [-ttl 15s] -- CMD ARGS...  run CMD only while holding a Nomad variable lock
+//	smurf s3-creds [-socket S] [-route s3]          AWS credential_process helper
+//	smurf proxy-port [-socket S] [-route s3]
+//
+// Board clients read SMURF_URL (default http://127.0.0.1:8080), SMURF_TOKEN and
+// SMURF_ACTOR (default $USER): the name recorded on comments and changes.
 package main
 
 import (
@@ -36,11 +41,23 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"pi2/board/internal/api"
-	"pi2/board/internal/nomadlock"
-	"pi2/board/internal/proxytoken"
-	"pi2/board/internal/store"
+	"smurfs-village/smurf/internal/api"
+	"smurfs-village/smurf/internal/nomadlock"
+	"smurfs-village/smurf/internal/proxytoken"
+	"smurfs-village/smurf/internal/store"
 )
+
+// boardCommands are the subcommands of "smurf board"; the ones in shortcuts
+// may also be given directly after "smurf".
+var boardCommands = map[string]func([]string) error{
+	"serve": serve, "add": add, "list": list, "ls": list, "show": show, "comment": comment,
+	"move": move, "mv": move, "events": events, "search": search,
+}
+
+var shortcuts = map[string]bool{"add": true, "list": true, "ls": true, "show": true, "comment": true,
+	"move": true, "mv": true, "events": true, "search": true}
+
+var helpers = map[string]func([]string) error{"lock": lock, "s3-creds": s3Creds, "proxy-port": proxyPort}
 
 func main() {
 	log.SetFlags(0)
@@ -48,40 +65,29 @@ func main() {
 		usage()
 	}
 	cmd, args := os.Args[1], os.Args[2:]
-	var err error
-	switch cmd {
-	case "serve":
-		err = serve(args)
-	case "add":
-		err = add(args)
-	case "list", "ls":
-		err = list(args)
-	case "show":
-		err = show(args)
-	case "comment":
-		err = comment(args)
-	case "move", "mv":
-		err = move(args)
-	case "events":
-		err = events(args)
-	case "search":
-		err = search(args)
-	case "s3-creds":
-		err = s3Creds(args)
-	case "proxy-port":
-		err = proxyPort(args)
-	case "lock":
-		err = lock(args)
+	name := cmd
+	run, ok := helpers[cmd]
+	switch {
+	case ok:
+	case cmd == "board" && len(args) > 0 && boardCommands[args[0]] != nil:
+		name = "board " + args[0]
+		run, args = boardCommands[args[0]], args[1:]
+	case shortcuts[cmd]:
+		name = "board " + cmd
+		run = boardCommands[cmd]
 	default:
 		usage()
 	}
-	if err != nil {
-		log.Fatalf("board %s: %v", cmd, err)
+	if err := run(args); err != nil {
+		log.Fatalf("smurf %s: %v", name, err)
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: board serve|add|list|show|comment|move|events|search|s3-creds|proxy-port|lock ... (see the package doc)")
+	fmt.Fprintln(os.Stderr, `usage: smurf board serve|add|list|show|comment|move|events|search ...
+       smurf add|ls|show|comment|mv|events|search ...   (shortcuts for smurf board ...)
+       smurf lock|s3-creds|proxy-port ...                (helpers for the Nomad jobs)
+see the package documentation for the flags`)
 	os.Exit(2)
 }
 
@@ -97,24 +103,24 @@ func serve(args []string) error {
 	defer st.Close()
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           (&api.Server{Store: st, Token: os.Getenv("BOARD_TOKEN")}).Handler(),
+		Handler:           (&api.Server{Store: st, Token: os.Getenv("SMURF_TOKEN")}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("board: serving %s on http://%s", *db, *listen)
+	log.Printf("smurf board: serving %s on http://%s", *db, *listen)
 	return srv.ListenAndServe()
 }
 
 // ---- client side
 
 func actor() string {
-	if a := os.Getenv("BOARD_ACTOR"); a != "" {
+	if a := os.Getenv("SMURF_ACTOR"); a != "" {
 		return a
 	}
 	return os.Getenv("USER")
 }
 
 func request(method, path string, body, out any) error {
-	base := os.Getenv("BOARD_URL")
+	base := os.Getenv("SMURF_URL")
 	if base == "" {
 		base = "http://127.0.0.1:8080"
 	}
@@ -131,7 +137,7 @@ func request(method, path string, body, out any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if tok := os.Getenv("BOARD_TOKEN"); tok != "" {
+	if tok := os.Getenv("SMURF_TOKEN"); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
@@ -173,7 +179,7 @@ func add(args []string) error {
 	labels := fs.String("labels", "", "labels as JSON")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
-		return fmt.Errorf(`usage: board add [flags] "title" [body]`)
+		return fmt.Errorf(`usage: smurf board add [flags] "title" [body]`)
 	}
 	n := store.NewTask{Title: fs.Arg(0), Body: strings.Join(fs.Args()[1:], " "), Repo: *repo, BaseRev: *rev,
 		Priority: *prio, CreatedBy: actor()}
@@ -225,7 +231,7 @@ func list(args []string) error {
 
 func show(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: board show ID")
+		return fmt.Errorf("usage: smurf board show ID")
 	}
 	id, err := taskArg(args[0])
 	if err != nil {
@@ -272,7 +278,7 @@ func show(args []string) error {
 
 func comment(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf(`usage: board comment ID "text"`)
+		return fmt.Errorf(`usage: smurf board comment ID "text"`)
 	}
 	id, err := taskArg(args[0])
 	if err != nil {
@@ -284,7 +290,7 @@ func comment(args []string) error {
 
 func move(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: board move ID STATE [-assignee A] [-branch B]")
+		return fmt.Errorf("usage: smurf board move ID STATE [-assignee A] [-branch B]")
 	}
 	id, err := taskArg(args[0])
 	if err != nil {
@@ -311,7 +317,7 @@ func move(args []string) error {
 
 func events(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: board events ID")
+		return fmt.Errorf("usage: smurf board events ID")
 	}
 	id, err := taskArg(args[0])
 	if err != nil {
@@ -329,7 +335,7 @@ func events(args []string) error {
 
 func search(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: board search QUERY")
+		return fmt.Errorf("usage: smurf board search QUERY")
 	}
 	var hits []store.Comment
 	if err := request("GET", "/api/search?q="+url.QueryEscape(strings.Join(args, " ")), nil, &hits); err != nil {
@@ -380,7 +386,7 @@ func lock(args []string) error {
 	grace := fs.Duration("grace", 10*time.Second, "time the command gets to stop before SIGKILL")
 	fs.Parse(args)
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: board lock [flags] -- CMD ARGS...")
+		return fmt.Errorf("usage: smurf lock [flags] -- CMD ARGS...")
 	}
 	c := nomadlock.TaskAPI(os.ExpandEnv("${NOMAD_SECRETS_DIR}/api.sock"), os.Getenv("NOMAD_TOKEN"), os.Getenv("NOMAD_NAMESPACE"))
 	holder := os.Getenv("NOMAD_ALLOC_ID")
@@ -398,9 +404,9 @@ func lock(args []string) error {
 			break
 		}
 		if !errors.Is(err, nomadlock.ErrHeld) && ctx.Err() == nil {
-			log.Printf("board lock: %v; retrying", err)
+			log.Printf("smurf lock: %v; retrying", err)
 		} else if ctx.Err() == nil {
-			log.Printf("board lock: %s is held by another allocation; waiting", *path)
+			log.Printf("smurf lock: %s is held by another allocation; waiting", *path)
 		}
 		select {
 		case <-ctx.Done():
@@ -408,7 +414,7 @@ func lock(args []string) error {
 		case <-time.After(5 * time.Second):
 		}
 	}
-	log.Printf("board lock: holding %s", *path)
+	log.Printf("smurf lock: holding %s", *path)
 	defer c.Release(context.Background(), *path, id)
 
 	cmd := exec.Command(fs.Arg(0), fs.Args()[1:]...)

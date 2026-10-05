@@ -11,8 +11,8 @@ bench/pi-agent/
 # A git repo of its own (the tasks diff against it): rebuilt by bench/make-base.sh.
 bench/base/alibuild/
 
-# board: built binaries and local databases.
-board/bin/
+# smurf: built binaries and local databases.
+smurf/bin/
 *.db
 *.db-shm
 *.db-wal

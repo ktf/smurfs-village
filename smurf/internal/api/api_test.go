@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"pi2/board/internal/store"
+	"smurfs-village/smurf/internal/store"
 )
 
 func server(t *testing.T, token string) *httptest.Server {
