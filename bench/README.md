@@ -1,8 +1,18 @@
-# Agent runtime comparison: Claude Code vs pi on GLM
+# Agent benchmark: self-hosted models × agent loops, against Claude
 
-Same backend (GLM-5.3-Flash on pcapiserv12, through the security proxy's `glm`
-route), two agent loops. The question: which runtime gets more done with a small
-self-hosted model?
+Ten small aliBuild and C++ tasks, each with a hidden check. Runners are a model
+plus an agent loop (Claude Code or pi); self-hosted models are reached through
+the security proxy:
+
+| Backend | Proxy route | Model | Context | Runners |
+|---|---|---|---|---|
+| `glm` | `glm` (pcapiserv12, llama.cpp) | GLM-5.3-Flash | 131k | `claude-glm`, `pi-glm` |
+| `qwen38` | `aigw` (CERN LiteLLM gateway) | qwen3.8-27b-fp16 | 131k | `claude-qwen38`, `pi-qwen38` |
+| `gptoss` | `aigw` | gpt-oss-20b | 32k | `pi-gptoss` only: Claude Code overflows 32k after a few file reads |
+| `qwen3` | `aigw` | hf-qwen3-32b-awq | 16k | `pi-qwen3` only: Claude Code's first request (~18k tokens) does not fit |
+
+Plus `claude-sonnet` and `claude-opus` on the subscription as the reference.
+Backends live in the `BACKENDS` table in `run.py`.
 
 ```sh
 ./run.py --validate               # harness self-check, no agents (~10 s)

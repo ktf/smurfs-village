@@ -73,15 +73,39 @@ bucket's keypair from Vault into the proxy sidecar, and Litestream only ever
 sees a rotating gate token, through the AWS SDK's `credential_process`
 (`smurf s3-creds`), re-read every hour.
 
-Before the first `nomad-rw job run deploy/smurf-board.nomad.hcl`:
+No image of its own while smurf is under heavy development: the board task
+builds `smurf` at start-up in the stock Go image (pinned by digest) from
+`github.com/ktf/smurfs-village` at the commit given as `smurf_ref`, and fetches
+Litestream with its checksum. `deploy/entrypoint.sh` and `deploy/litestream.yml`
+come from that same commit, so push before deploying:
 
-- [ ] Vault path and field names of the smurfs-village keypair (the `TODO` in
-      the bootstrap task; the current `kv/data/s3-services` keys get 403 on it).
-- [ ] Build and push the image: `docker build -f deploy/Dockerfile -t registry.cern.ch/alisw/smurf:0.1.0 .`,
-      then pin it by digest in the jobspec.
+```sh
+sl push --to main
+nomad-rw job run -var smurf_ref=$(sl log -r . -T '{node}') deploy/smurf-board.nomad.hcl
+```
+
+A branch name is refused at start-up: a restart must never run something nobody
+deployed. Rolling back is running the older hash. Go's caches are on the sticky
+disk, so a restart on the same node rebuilds in seconds. `deploy/Dockerfile` is
+kept for when smurf settles into a `docks` image.
+
+Before the first deployment:
+
+- [x] A keypair of its own in the ALICE Release testing project (the bucket's
+      project), created on aiadm.cern.ch. Its keys reach the whole project
+      (alibuild-ac, alibuild-cas too); the proxy signs with them for
+      `smurfs-village` only (`s3_scope_violation`).
+- [x] Vault (admin, once): `deploy/vault/setup.sh --apply` created the
+      `smurfs-village/` KV mount (outside `kv/`, which the shared `nomad` role
+      reads), the `smurf-board` policy and a `smurf-board` role usable only by
+      this job; the keypair is at `smurfs-village/board`.
+- [ ] A security-proxy image with `s3_scope_violation` (docks `security-proxy`,
+      `ALI_BOT_REF` = the ali-bot commit), pinned in the proxy and bootstrap tasks.
 - [ ] Apply the lock policy once (admin): see `deploy/smurf-board-lock.policy.hcl`.
 
 Checked so far: unit tests; the restore/replicate/restart flow with a local file
 replica; `smurf lock` against a fake Task API (waits, hands over on SIGTERM,
-stops on lost renewals); `nomad job validate` against the cluster. Not yet
-checked: Litestream through the proxy's S3 signing, and the image build.
+stops on lost renewals); `nomad job validate` against the cluster; a clean
+linux/amd64 build of the pushed commit with Go 1.27.1, the image's version.
+Not yet checked: the build and Litestream inside the allocation, and S3 through
+the proxy's signing.

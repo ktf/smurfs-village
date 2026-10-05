@@ -25,7 +25,7 @@ PRICES = {
                          "cache_read": 0.10, "output": 5.00},
 }
 KINDS = ["input", "cache_write_5m", "cache_write_1h", "cache_read", "output"]
-SELF_HOSTED = {"claude-glm", "pi-glm"}
+PAID = {"claude-sonnet", "claude-opus"}  # every other runner is a self-hosted model
 
 
 def claude_tokens(stream):
@@ -120,7 +120,7 @@ def main():
               + f" | {'self-hosted' if cost is None else f'${cost:.2f}'} |")
 
     print("\n## Cost per task on Claude (what a self-hosted run avoids)\n")
-    paid = [rn for rn in runners if rn not in SELF_HOSTED]
+    paid = [rn for rn in runners if rn in PAID]
     print("| task | " + " | ".join(paid) + " |")
     print("|---|" + "---|" * len(paid))
     by = {(r["task"], r["runner"]): r for r in rows}
@@ -131,7 +131,7 @@ def main():
     if not a.hw_eur:
         return
     print("\n## Amortisation\n")
-    for hosted in [rn for rn in runners if rn in SELF_HOSTED]:
+    for hosted in [rn for rn in runners if rn not in PAID]:
         for ref in paid:
             pairs = [(by[(t, hosted)], by[(t, ref)]) for t in tasks
                      if (t, hosted) in by and (t, ref) in by and by[(t, hosted)]["passed"]]

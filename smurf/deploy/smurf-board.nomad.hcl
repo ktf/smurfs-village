@@ -1,7 +1,13 @@
 ## Smurfs Village board: tasks, comments, events and usage for the agent fleet.
 #
-#   nomad job run -output smurf-board.nomad.hcl   # parse, submit nothing
-#   nomad-rw job run smurf-board.nomad.hcl        # register (human)
+#   nomad job run -output -var smurf_ref=<commit> smurf-board.nomad.hcl   # parse, submit nothing
+#   nomad-rw job run -var smurf_ref=<commit> smurf-board.nomad.hcl        # register (human)
+#
+# While smurf is under heavy development there is no image of its own: the board
+# task builds it at start-up in the stock Go image, from github.com/ktf/smurfs-village
+# at the commit given as smurf_ref (a full hash, recorded in the job's version).
+# Deploying a change is: push, then run with the new hash; rolling back is the
+# old hash. deploy/Dockerfile is kept for when it settles into a docks image.
 #
 # One allocation, anywhere in the pool. The SQLite database lives on the group's
 # ephemeral disk and Litestream streams it to s3://smurfs-village/board,
@@ -20,6 +26,11 @@
 # S3 credentials follow queue-metrics.nomad: a security-proxy sidecar holds the
 # bucket's keys (pushed from Vault by the bootstrap sidecar) and the board task
 # only ever sees a rotating gate token.
+
+variable "smurf_ref" {
+  type        = string
+  description = "Commit of github.com/ktf/smurfs-village to build and run (full hash; start.sh refuses anything else)"
+}
 
 job "smurf-board" {
   datacenters = ["meyrin"]
@@ -247,8 +258,11 @@ job "smurf-board" {
         sidecar = true
       }
 
+      # Its own Vault role, usable only by this job (deploy/vault/setup.sh), that
+      # reads smurfs-village/data/board and nothing else -- not the shared "nomad"
+      # role, which reads all of kv/*.
       vault {
-        role = "nomad"
+        role = "smurf-board"
       }
 
       user = "root"
@@ -283,10 +297,11 @@ job "smurf-board" {
         push_all () {
         cat /etc/grid-security/hostcert.pem /etc/grid-security/hostkey.pem \
           | "$BIN/security-proxy-push" grid-cert --socket "$SOCK" || return 1
-        # TODO: the Vault path and fields of the smurfs-village keypair.
-        python3 /local/vault-field.py kv/data/smurfs-village s3_access_key \
+        # A keypair of its own in the ALICE Release testing project, revocable
+        # alone; the proxy signs with it for the smurfs-village bucket only.
+        python3 /local/vault-field.py smurfs-village/data/board s3_access_key \
           | "$BIN/security-proxy-push" s3-access-smurfs-village --socket "$SOCK" || return 1
-        python3 /local/vault-field.py kv/data/smurfs-village s3_secret_key \
+        python3 /local/vault-field.py smurfs-village/data/board s3_secret_key \
           | "$BIN/security-proxy-push" s3-secret-smurfs-village --socket "$SOCK" || return 1
         }
 
@@ -337,9 +352,66 @@ job "smurf-board" {
       driver = "docker"
 
       config {
-        # TODO: pin by digest once pushed (docker build -f deploy/Dockerfile).
-        image        = "registry.cern.ch/alisw/smurf:0.1.0"
+        # The stock Go image, pinned by digest: smurf is built at start-up (above).
+        image        = "golang@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190"
         network_mode = "host"
+        command      = "/bin/sh"
+        args         = ["${NOMAD_TASK_DIR}/start.sh"]
+      }
+
+      # Unprivileged; group 8485 = securityproxy_clients, which owns the
+      # sidecar's agent socket.
+      user = "8486:8485"
+
+      # The source at exactly smurf_ref. A commit hash, not a branch, so a
+      # restart can never pick up something nobody deployed.
+      artifact {
+        source      = "git::https://github.com/ktf/smurfs-village.git"
+        destination = "local/src"
+        options {
+          ref = var.smurf_ref
+        }
+      }
+
+      # Litestream, checked against the release's published SHA-256.
+      artifact {
+        source      = "https://github.com/benbjohnson/litestream/releases/download/v0.5.17/litestream-0.5.17-linux-x86_64.tar.gz"
+        destination = "local/litestream"
+        options {
+          checksum = "sha256:cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d"
+        }
+      }
+
+      template {
+        destination = "local/start.sh"
+        perms       = "0755"
+        data        = <<-EOS
+        #!/bin/sh
+        # Build smurf from the fetched source, then hand over to entrypoint.sh.
+        # Go's caches live on the sticky ephemeral disk, so a restart on the same
+        # node rebuilds in seconds; only a fresh node compiles from scratch.
+        set -eu
+        # A full commit hash only: a branch would let a restart run whatever the
+        # branch says by then. (Checked here because Nomad's HCL has no regex.)
+        ref="${var.smurf_ref}"
+        case "$ref" in *[!0-9a-f]*|"") ref=bad ;; esac
+        if [ $${#ref} -ne 40 ]; then
+          echo "smurf_ref must be a full 40-character commit hash, got: ${var.smurf_ref}" >&2
+          exit 1
+        fi
+        data="$${NOMAD_ALLOC_DIR}/data"
+        mkdir -p "$data/bin" "$data/go"
+        export HOME="$data/go" GOCACHE="$data/go/cache" GOMODCACHE="$data/go/mod"
+        export CGO_ENABLED=0 GOFLAGS=-trimpath GOTOOLCHAIN=local
+        cd "$${NOMAD_TASK_DIR}/src/smurf"
+        go build -o "$data/bin/smurf" ./cmd/smurf
+        echo "built smurf at ${var.smurf_ref}"
+
+        export PATH="$data/bin:$${NOMAD_TASK_DIR}/litestream:$PATH"
+        export LITESTREAM_CONFIG="$${NOMAD_TASK_DIR}/src/smurf/deploy/litestream.yml"
+        export SMURF_STATE_DIR="$data"
+        exec sh "$${NOMAD_TASK_DIR}/src/smurf/deploy/entrypoint.sh"
+        EOS
       }
 
       # Time for Litestream to ship the last second of writes on a stop.
@@ -351,8 +423,8 @@ job "smurf-board" {
       }
 
       resources {
-        cpu    = 300
-        memory = 256
+        cpu    = 1000 # the go build at start-up; the board itself needs far less
+        memory = 1024
       }
     }
   }

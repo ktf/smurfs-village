@@ -33,6 +33,19 @@ CHECKS = BENCH / "checks"
 PY = os.path.expanduser("~/src/alibuild-devel/bin/python")  # has aliBuild's deps
 SOCK = "/usr/local/var/run/security-proxy/agent/agent.sock"
 GLM_MODEL = "GLM-5.3-Flash"
+
+# Self-hosted backends: the security-proxy route that reaches each model, and
+# its context window as the server reports it (probed 2026-10-05), which pi
+# uses to decide when to compact. Claude Code's first request alone is about
+# 18k tokens, so a small window runs with pi only ("claude": False): 16k cannot
+# hold it at all, and at 32k the first file reads overflow it (the gateway then
+# answers 500 and Claude Code retries for minutes before giving up).
+BACKENDS = {
+    "glm":    {"route": "glm",  "model": GLM_MODEL,          "reasoning": True,  "context": 131072, "claude": True},
+    "qwen38": {"route": "aigw", "model": "qwen3.8-27b-fp16", "reasoning": False, "context": 131072, "claude": True},
+    "gptoss": {"route": "aigw", "model": "gpt-oss-20b",      "reasoning": True,  "context": 32768,  "claude": False},
+    "qwen3":  {"route": "aigw", "model": "hf-qwen3-32b-awq", "reasoning": False, "context": 16384,  "claude": False},
+}
 TIMEOUT = 15 * 60
 
 SUFFIX = ("\n\nWork in the current directory. Do not ask questions: finish the task "
@@ -188,14 +201,16 @@ def claude_cmd(prompt, model=None):
     return cmd + (["--model", model] if model else [])
 
 
-def run_claude_glm(prompt, ws):
+def run_claude_hosted(backend, prompt, ws):
+    """Claude Code against a self-hosted model, through the proxy route of its backend."""
+    route, model = BACKENDS[backend]["route"], BACKENDS[backend]["model"]
     cfg = BENCH / "claude-config"  # empty: no user CLAUDE.md, skills, memory or hooks
     cfg.mkdir(exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    env.update(CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL=proxy("--addr") + "/glm",
-               ANTHROPIC_AUTH_TOKEN=proxy("glm"), ANTHROPIC_MODEL=GLM_MODEL,
-               ANTHROPIC_DEFAULT_OPUS_MODEL=GLM_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL=GLM_MODEL,
-               ANTHROPIC_DEFAULT_HAIKU_MODEL=GLM_MODEL, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
+    env.update(CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL=proxy("--addr") + "/" + route,
+               ANTHROPIC_AUTH_TOKEN=proxy(route), ANTHROPIC_MODEL=model,
+               ANTHROPIC_DEFAULT_OPUS_MODEL=model, ANTHROPIC_DEFAULT_SONNET_MODEL=model,
+               ANTHROPIC_DEFAULT_HAIKU_MODEL=model, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
     return claude_cmd(prompt), env
 
 
@@ -209,25 +224,30 @@ def run_claude_opus(prompt, ws):
 
 @functools.cache  # once per invocation: parallel agents must not rewrite it under each other
 def write_pi_models():
+    """One pi provider per proxy route, holding every benchmarked model behind it."""
     agent = BENCH / "pi-agent"
     agent.mkdir(exist_ok=True)
-    (agent / "models.json").write_text(json.dumps({"providers": {"glm": {
-        "baseUrl": proxy("--addr") + "/glm",  # the proxy port is random: resolve per run
-        "api": "anthropic-messages",
-        "apiKey": f"!security-proxy-token --socket {SOCK} glm",
-        "authHeader": True,
-        "models": [{"id": GLM_MODEL, "name": GLM_MODEL, "reasoning": True,
-                    "contextWindow": 131072, "maxTokens": 16384}],
-    }}}, indent=2))
+    providers = {}
+    for b in BACKENDS.values():
+        p = providers.setdefault(b["route"], {
+            "baseUrl": proxy("--addr") + "/" + b["route"],  # the proxy port is random: resolve per run
+            "api": "anthropic-messages",
+            "apiKey": f"!security-proxy-token --socket {SOCK} {b['route']}",
+            "authHeader": True,
+            "models": []})
+        p["models"].append({"id": b["model"], "name": b["model"], "reasoning": b["reasoning"],
+                            "contextWindow": b["context"], "maxTokens": 8192})
+    (agent / "models.json").write_text(json.dumps({"providers": providers}, indent=2))
     return agent
 
 
-def run_pi_glm(prompt, ws):
+def run_pi_hosted(backend, prompt, ws):
+    """pi against a self-hosted model, through the proxy route of its backend."""
     env = dict(os.environ, PI_CODING_AGENT_DIR=str(write_pi_models()), PI_OFFLINE="1",
                PI_SKIP_VERSION_CHECK="1", PI_TELEMETRY="0")
     cmd = [str(BENCH / "node_modules/.bin/pi"), "-p", "--mode", "json", "--no-session",
            "--no-extensions", "--no-skills", "--no-context-files",
-           "--provider", "glm", "--model", GLM_MODEL, prompt]
+           "--provider", BACKENDS[backend]["route"], "--model", BACKENDS[backend]["model"], prompt]
     return cmd, env
 
 
@@ -236,8 +256,11 @@ def run_dry(prompt, ws):
     return ["sleep", "2"], dict(os.environ)
 
 
-RUNNERS = {"claude-glm": run_claude_glm, "pi-glm": run_pi_glm, "claude-sonnet": run_claude_sonnet,
-           "claude-opus": run_claude_opus, "dry": run_dry}
+RUNNERS = {"claude-sonnet": run_claude_sonnet, "claude-opus": run_claude_opus, "dry": run_dry}
+for _name, _b in BACKENDS.items():  # claude-glm, pi-glm, claude-qwen38, pi-qwen38, ...
+    if _b["claude"]:
+        RUNNERS[f"claude-{_name}"] = functools.partial(run_claude_hosted, _name)
+    RUNNERS[f"pi-{_name}"] = functools.partial(run_pi_hosted, _name)
 
 
 def parse_stream(runner, path):
@@ -262,7 +285,10 @@ def parse_stream(runner, path):
                 s["input_tokens"] = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
                                      + u.get("cache_creation_input_tokens", 0))
                 s["output_tokens"] = u.get("output_tokens", 0)
-                s["cost_usd"] = e.get("total_cost_usd")  # API-equivalent, also on a subscription
+                if runner in ("claude-sonnet", "claude-opus"):
+                    # API-equivalent, also on a subscription. For a self-hosted model
+                    # Claude Code prices tokens as if a Claude model had served them.
+                    s["cost_usd"] = e.get("total_cost_usd")
                 if e.get("is_error"):
                     s["error"] = str(e.get("subtype"))
         elif e.get("type") == "message_end" and e["message"].get("role") == "assistant":
