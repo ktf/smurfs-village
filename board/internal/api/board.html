@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="15">
+<title>Agent Board</title>
+<style>
+  :root { --bg: #f6f6f4; --card: #fff; --ink: #1d1d1b; --quiet: #6b6b66; --line: #dddcd6; --accent: #2a6fdb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --card: #262625; --ink: #ecebe6; --quiet: #a3a29c; --line: #3a3a38; --accent: #6ea2f5; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-items: start; }
+  .col h2 { font-size: 13px; font-weight: 600; color: var(--quiet); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  .card .t { font-weight: 600; }
+  .card .m { color: var(--quiet); font-size: 12px; margin-top: 2px; }
+  .card.sub { border-left: 3px solid var(--accent); }
+  .empty { color: var(--quiet); font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Agent Board</h1>
+<div class="board">
+{{range .}}
+  <section class="col">
+    <h2>{{title .State}} · {{len .Tasks}}</h2>
+    {{range .Tasks}}
+    <div class="card{{if .ParentID}} sub{{end}}">
+      <div class="t">#{{.ID}} {{.Title}}</div>
+      <div class="m">{{if .Assignee}}{{.Assignee}} · {{end}}{{if .Repo}}{{.Repo}} · {{end}}p{{.Priority}}{{if .ParentID}} · sub of #{{.ParentID}}{{end}}{{if .ResultBranch}} · {{.ResultBranch}}{{end}}</div>
+    </div>
+    {{else}}
+    <div class="empty">nothing here</div>
+    {{end}}
+  </section>
+{{end}}
+</div>
+</body>
+</html>

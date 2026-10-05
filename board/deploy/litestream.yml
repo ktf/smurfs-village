@@ -1,0 +1,15 @@
+# Litestream for the board database. ${...} is filled in from the environment by
+# the entrypoint: BOARD_DB on the allocation's sticky ephemeral disk, S3_ENDPOINT
+# = the security-proxy sidecar's s3 route. Credentials come from the AWS SDK's
+# credential_process (board s3-creds), so the rotating gate token is re-read
+# every hour instead of being frozen into this file.
+dbs:
+  - path: ${BOARD_DB}
+    replicas:
+      - type: s3
+        bucket: smurfs-village
+        path: agent-board
+        endpoint: ${S3_ENDPOINT}
+        region: us-east-1
+        force-path-style: true
+        sync-interval: 1s

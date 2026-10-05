@@ -1,0 +1,18 @@
+# Generated or restorable; never committed.
+__pycache__/
+*.pyc
+
+# bench: `npm ci` restores node_modules from package-lock.json; runs/ is output;
+# claude-config/ and pi-agent/ are the agents' state dirs, rewritten per run.
+bench/node_modules/
+bench/runs/
+bench/claude-config/
+bench/pi-agent/
+# A git repo of its own (the tasks diff against it): rebuilt by bench/make-base.sh.
+bench/base/alibuild/
+
+# board: built binaries and local databases.
+board/bin/
+*.db
+*.db-shm
+*.db-wal
